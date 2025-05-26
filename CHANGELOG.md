@@ -17,4 +17,10 @@ This release includes basical aclint functionalities.
 
 ### Fixed
 
+## [v0.1.1]
+
+### Fixed
+
+- replace `#[naked]` with `#[unsafe(naked)]` for stable Rust
+
 [v0.1.0]: https://github.com/rustsbi/aclint/releases/tag/v0.1.0
