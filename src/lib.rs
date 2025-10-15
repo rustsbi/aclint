@@ -2,201 +2,116 @@
 //!
 //! RISC-V ACLINT is defined in <https://github.com/riscv/riscv-aclint>.
 #![no_std]
-#![deny(warnings)]
 
-use core::{arch::naked_asm, cell::UnsafeCell};
+use core::cell::UnsafeCell;
 
-/// MTIME register.
+/// Machine-level time counter register.
 #[repr(transparent)]
 pub struct MTIME(UnsafeCell<u64>);
 
-/// One MTIMECMP register.
+/// Machine-level time compare register.
 #[repr(transparent)]
 pub struct MTIMECMP(UnsafeCell<u64>);
 
-/// One MSIP register.
+/// Machine-level IPI register.
 #[repr(transparent)]
 pub struct MSIP(UnsafeCell<u32>);
 
-/// One SETSSIP register.
+/// Set supervisor-level IPI register.
 #[repr(transparent)]
 pub struct SETSSIP(UnsafeCell<u32>);
 
-/// Machine-level Timer Device (MTIMER).
-#[repr(transparent)]
-pub struct MTIMER([MTIMECMP; 4095]);
-
 /// Machine-level Software Interrupt Device (MSWI).
-#[repr(transparent)]
-pub struct MSWI([MSIP; 4095]);
+///
+/// # Usage
+///
+/// ```no_run
+/// impl rustsbi::Ipi for Clint {
+///     #[inline]
+///     fn send_ipi(&self, hart_mask: HartMask) -> SbiRet {
+///         for i in hart_ids() {
+///             if hart_mask.has_bit(i) && remote_hsm(i).map_or(false, |hsm| hsm.allow_ipi()) {
+///                 // we assume this MSWI device covers hart id beginning from #0.
+///                 self.mswi().set_msip(i);
+///             }
+///         }
+///         SbiRet::success(0)
+///     }
+/// }
+/// ```
+#[repr(C)]
+pub struct MSWI {
+    /// HART index 0..4095 machine-level IPI registers.
+    pub msip: [MSIP; 4095],
+    _reserved: u32,
+}
 
 /// Supervisor-level Software Interrupt Device (SSWI).
-#[repr(transparent)]
-pub struct SSWI([SETSSIP; 4095]);
+#[repr(C)]
+pub struct SSWI {
+    pub setssip: [SETSSIP; 4095],
+    _reserved: u32,
+}
 
-/// Sifive CLINT device.
+/// SiFive Core-Local Interruptor (CLINT) device.
 #[repr(C)]
 pub struct SifiveClint {
-    mswi: MSWI,
-    reserve: u32,
-    mtimer: MTIMER,
-    mtime: MTIME,
+    /// Machine-level inter-processor (or software) interrupts.
+    pub mswi: MSWI,
+    /// Machine-level fixed-frequency counter and timer events; compartion part.
+    pub mtimecmp: [MTIMECMP; 4095],
+    /// Machine-level fixed-frequency counter and timer events; number of cycles part.
+    pub mtime: MTIME,
 }
 
 impl SifiveClint {
-    const MTIMER_OFFSET: usize = size_of::<MSWI>() + size_of::<u32>();
-    const MTIME_OFFSET: usize = Self::MTIMER_OFFSET + size_of::<MTIMER>();
-
+    /// Read `MTIME` register.
     #[inline]
     pub fn read_mtime(&self) -> u64 {
         unsafe { self.mtime.0.get().read_volatile() }
     }
 
+    /// Write `MTIME` register.
     #[inline]
     pub fn write_mtime(&self, val: u64) {
         unsafe { self.mtime.0.get().write_volatile(val) }
     }
 
+    /// Read `MTIMECMP` register for the given hart.
     #[inline]
     pub fn read_mtimecmp(&self, hart_idx: usize) -> u64 {
-        unsafe { self.mtimer.0[hart_idx].0.get().read_volatile() }
+        unsafe { self.mtimecmp[hart_idx].0.get().read_volatile() }
     }
 
+    /// Write `MTIMECMP` register for the given hart.
     #[inline]
     pub fn write_mtimecmp(&self, hart_idx: usize, val: u64) {
-        unsafe { self.mtimer.0[hart_idx].0.get().write_volatile(val) }
+        unsafe { self.mtimecmp[hart_idx].0.get().write_volatile(val) }
     }
 
+    /// Read machine-level software interrupt state for given hart.
     #[inline]
     pub fn read_msip(&self, hart_idx: usize) -> bool {
-        unsafe { self.mswi.0[hart_idx].0.get().read_volatile() != 0 }
+        unsafe { self.mswi.msip[hart_idx].0.get().read_volatile() != 0 }
     }
 
+    /// Set machine-level software interrupt for given hart.
     #[inline]
     pub fn set_msip(&self, hart_idx: usize) {
-        unsafe { self.mswi.0[hart_idx].0.get().write_volatile(1) }
+        unsafe { self.mswi.msip[hart_idx].0.get().write_volatile(1) }
     }
 
+    /// Clear machine-level software interrupt for given hart.
     #[inline]
     pub fn clear_msip(&self, hart_idx: usize) {
-        unsafe { self.mswi.0[hart_idx].0.get().write_volatile(0) }
+        unsafe { self.mswi.msip[hart_idx].0.get().write_volatile(0) }
     }
 }
 
-impl SifiveClint {
-    #[unsafe(naked)]
-    pub extern "C" fn read_mtime_naked(&self) -> u64 {
-        naked_asm!(
-            "   addi sp, sp, -8
-                sd   a1, (sp)
-
-                li   a1, {offset}
-                add  a0, a0, a1
-
-                ld   a1, (sp)
-                addi sp, sp,  8
-
-                ld   a0, (a0)
-                ret
-            ",
-            offset = const Self::MTIME_OFFSET,
-        )
-    }
-
-    #[unsafe(naked)]
-    pub extern "C" fn write_mtime_naked(&self, val: u64) -> u64 {
-        naked_asm!(
-            "   addi sp, sp, -8
-                sd   a1, (sp)
-
-                li   a1, {offset}
-                add  a0, a0, a1
-
-                ld   a1, (sp)
-                addi sp, sp,  8
-
-                sd   a1, (a0)
-                ret
-            ",
-            offset = const Self::MTIME_OFFSET,
-        )
-    }
-
-    #[unsafe(naked)]
-    pub extern "C" fn read_mtimecmp_naked(&self, hart_idx: usize) -> u64 {
-        naked_asm!(
-            "   slli a1, a1, 3
-                add  a0, a0, a1
-
-                li   a1, {offset}
-                add  a0, a0, a1
-
-                ld   a0, (a0)
-                ret
-            ",
-            offset = const Self::MTIMER_OFFSET,
-        )
-    }
-
-    #[unsafe(naked)]
-    pub extern "C" fn write_mtimecmp_naked(&self, hart_idx: usize, val: u64) {
-        naked_asm!(
-            "   slli a1, a1, 3
-                add  a0, a0, a1
-
-                li   a1, {offset}
-                add  a0, a0, a1
-
-                sd   a2, (a0)
-                ret
-            ",
-            offset = const Self::MTIMER_OFFSET,
-        )
-    }
-
-    #[unsafe(naked)]
-    pub extern "C" fn read_msip_naked(&self, hart_idx: usize) -> bool {
-        naked_asm!(
-            "   slli a1, a1, 2
-                add  a0, a0, a1
-                lw   a0, (a0)
-                ret
-            ",
-        )
-    }
-
-    #[unsafe(naked)]
-    pub extern "C" fn set_msip_naked(&self, hart_idx: usize) {
-        naked_asm!(
-            "   slli a1, a1, 2
-                add  a0, a0, a1
-                addi a1, zero, 1
-                sw   a1, (a0)
-                ret
-            ",
-        )
-    }
-
-    #[unsafe(naked)]
-    pub extern "C" fn clear_msip_naked(&self, hart_idx: usize) {
-        naked_asm!(
-            "   slli a1, a1, 2
-                add  a0, a0, a1
-                sw   zero, (a0)
-                ret
-            ",
-        )
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn test() {
-        assert_eq!(size_of::<MSWI>(), 0x3ffc);
-        assert_eq!(size_of::<SSWI>(), 0x3ffc);
-        assert_eq!(size_of::<MTIMER>(), 0x7ff8);
-        assert_eq!(size_of::<SifiveClint>(), 0xc000);
-    }
+#[test]
+fn test() {
+    assert_eq!(core::mem::size_of::<MSWI>(), 0x4000);
+    assert_eq!(core::mem::size_of::<SSWI>(), 0x4000);
+    assert_eq!(core::mem::size_of::<[MTIMECMP; 4095]>(), 0x7ff8);
+    assert_eq!(core::mem::size_of::<SifiveClint>(), 0xc000);
 }
