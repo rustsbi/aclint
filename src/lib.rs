@@ -1,3 +1,6 @@
+//! Rust support for RISC-V ACLINT (Advanced Core Local Interruptor) peripheral.
+//!
+//! RISC-V ACLINT is defined in <https://github.com/riscv/riscv-aclint>.
 #![no_std]
 
 use core::cell::UnsafeCell;
